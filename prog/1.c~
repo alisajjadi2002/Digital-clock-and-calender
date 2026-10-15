@@ -1,0 +1,445 @@
+
+#include <mega32a.h>
+#include <delay.h>
+
+#define BUTTON_INC_PIN   0
+#define BUTTON_DEC_PIN   1
+#define BUTTON_BREAK_PIN 2
+
+// Common Anode: active-low segment patterns
+// PORTB: bit0=a, bit1=b, bit2=c, bit3=d,
+//        bit4=e, bit5=f, bit6=g, bit7=dp
+
+const unsigned char sevenSegment[10] = {
+    0xC0,  // 0
+    0xF9,  // 1
+    0xA4,  // 2
+    0xB0,  // 3
+    0x99,  // 4
+    0x92,  // 5
+    0x82,  // 6
+    0xF8,  // 7
+    0x80,  // 8
+    0x90   // 9
+};
+
+// Time digits
+volatile unsigned char secy = 0;
+volatile unsigned char secd = 0;
+
+volatile unsigned char miny = 0;
+volatile unsigned char mind = 0;
+
+volatile unsigned char hry = 0;
+volatile unsigned char hrd = 0;
+
+// Date digits
+// Year: yearh years yeard yeary
+volatile unsigned char yeary = 0;
+volatile unsigned char yeard = 0;
+volatile unsigned char years = 0;
+volatile unsigned char yearh = 2;
+
+volatile unsigned char mony = 1;
+volatile unsigned char mond = 0;
+
+volatile unsigned char dayy = 1;
+volatile unsigned char dayd = 0;
+
+
+// --------------------------------------------------
+// Button functions
+// --------------------------------------------------
+
+unsigned char is_button_pressed(unsigned char pin)
+{
+    return ((PINA & (1 << pin)) == 0);
+}
+
+
+// --------------------------------------------------
+// Digit selection
+//
+// Digits 0-7: PORTC.0 to PORTC.7
+// Digits 8-13: PORTD.0 to PORTD.5
+// Assumption: digit enable is active-high.
+// --------------------------------------------------
+
+void select_digit(unsigned char digit, unsigned char state)
+{
+    if (digit < 8)
+    {
+        if (state)
+            PORTC |= (1 << digit);
+        else
+            PORTC &= ~(1 << digit);
+    }
+    else if (digit < 14)
+    {
+        if (state)
+            PORTD |= (1 << (digit - 8));
+        else
+            PORTD &= ~(1 << (digit - 8));
+    }
+}
+
+
+void all_digits_off(void)
+{
+    PORTC = 0x00;
+    PORTD &= 0xC0;
+}
+
+
+void display_digit(unsigned char digit, unsigned char value)
+{
+    if (value > 9)
+        value = 0;
+
+    all_digits_off();
+
+    PORTB = sevenSegment[value];
+
+    select_digit(digit, 1);
+    delay_ms(1);
+    select_digit(digit, 0);
+}
+
+
+// --------------------------------------------------
+// Read a digit using the buttons
+// INC: PA0
+// DEC: PA1
+// BREAK: PA2
+// --------------------------------------------------
+
+unsigned char getval(unsigned char max,
+                     unsigned char digit)
+{
+    unsigned char counter = 0;
+
+    while (1)
+    {
+        display_digit(digit, counter);
+
+        if (is_button_pressed(BUTTON_INC_PIN))
+        {
+            delay_ms(20);
+
+            if (is_button_pressed(BUTTON_INC_PIN))
+            {
+                if (counter < max)
+                    counter++;
+
+                while (is_button_pressed(BUTTON_INC_PIN))
+                    display_digit(digit, counter);
+            }
+        }
+
+        if (is_button_pressed(BUTTON_DEC_PIN))
+        {
+            delay_ms(20);
+
+            if (is_button_pressed(BUTTON_DEC_PIN))
+            {
+                if (counter > 0)
+                    counter--;
+
+                while (is_button_pressed(BUTTON_DEC_PIN))
+                    display_digit(digit, counter);
+            }
+        }
+
+        if (is_button_pressed(BUTTON_BREAK_PIN))
+        {
+            delay_ms(20);
+
+            if (is_button_pressed(BUTTON_BREAK_PIN))
+            {
+                while (is_button_pressed(BUTTON_BREAK_PIN))
+                    display_digit(digit, counter);
+
+                break;
+            }
+        }
+    }
+
+    return counter;
+}
+
+
+// --------------------------------------------------
+// Calendar functions
+// --------------------------------------------------
+
+unsigned char days_in_month(unsigned char month,
+                            unsigned int year)
+{
+    switch (month)
+    {
+        case 1:
+        case 3:
+        case 5:
+        case 7:
+        case 8:
+        case 10:
+        case 12:
+            return 31;
+
+        case 4:
+        case 6:
+        case 9:
+        case 11:
+            return 30;
+
+        case 2:
+            if ((year % 400 == 0) ||
+                ((year % 4 == 0) && (year % 100 != 0)))
+                return 29;
+
+            return 28;
+
+        default:
+            return 31;
+    }
+}
+
+
+void increment_date(void)
+{
+    unsigned int year;
+    unsigned char month;
+    unsigned char day;
+
+    year = yearh * 1000U
+         + years * 100U
+         + yeard * 10U
+         + yeary;
+
+    month = mond * 10 + mony;
+    day = dayd * 10 + dayy;
+
+    if (month < 1 || month > 12)
+        month = 1;
+
+    day++;
+
+    if (day > days_in_month(month, year))
+    {
+        day = 1;
+        month++;
+
+        if (month > 12)
+        {
+            month = 1;
+            year++;
+
+            if (year > 9999)
+                year = 0;
+        }
+    }
+
+    dayd = day / 10;
+    dayy = day % 10;
+
+    mond = month / 10;
+    mony = month % 10;
+
+    yearh = year / 1000;
+    years = (year / 100) % 10;
+    yeard = (year / 10) % 10;
+    yeary = year % 10;
+}
+
+
+// --------------------------------------------------
+// Increment clock by one second
+// --------------------------------------------------
+
+void increase_func(void)
+{
+    secy++;
+
+    if (secy >= 10)
+    {
+        secy = 0;
+        secd++;
+
+        if (secd >= 6)
+        {
+            secd = 0;
+            miny++;
+
+            if (miny >= 10)
+            {
+                miny = 0;
+                mind++;
+
+                if (mind >= 6)
+                {
+                    mind = 0;
+                    hry++;
+
+                    if (hry >= ((hrd == 2) ? 4 : 10))
+                    {
+                        hry = 0;
+                        hrd++;
+
+                        if (hrd >= 3)
+                        {
+                            hrd = 0;
+                            increment_date();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+// --------------------------------------------------
+// Timer1: CTC mode, 1 Hz at 16 MHz
+// Prescaler = 256
+// OCR1A = 62499
+// --------------------------------------------------
+
+void timer1_init(void)
+{
+    TCCR1A = 0x00;
+    TCCR1B = 0x00;
+
+    TCNT1H = 0x00;
+    TCNT1L = 0x00;
+
+    OCR1AH = 0xF4;
+    OCR1AL = 0x23;
+
+    // Clear pending Timer1 Compare A flag
+    TIFR = 0x10;
+
+    // Enable Timer1 Compare A interrupt
+    TIMSK |= 0x10;
+
+    // CTC mode, prescaler 256
+    TCCR1B = 0x0C;
+
+    #asm("sei")
+}
+
+
+interrupt [TIM1_COMPA] void timer1_compa_isr(void)
+{
+    increase_func();
+}
+
+
+// --------------------------------------------------
+// Main program
+// --------------------------------------------------
+
+void main(void)
+{
+    unsigned char select = 0;
+
+    // PORTA: button inputs with internal pull-ups
+    DDRA = 0x00;
+    PORTA = 0xFF;
+
+    // PORTB: all seven-segment segment outputs
+    DDRB = 0xFF;
+    PORTB = 0xFF;
+
+    // PORTC: first eight digit-enable outputs
+    DDRC = 0xFF;
+    PORTC = 0x00;
+
+    // PORTD.0 - PORTD.5: remaining six digit enables
+    DDRD = 0x3F;
+    PORTD = 0x00;
+
+    // ----------------------------------------------
+    // Initial time setup
+    // Press BREAK to confirm each digit.
+    // ----------------------------------------------
+
+    hrd = getval(2, 0);
+
+    if (hrd == 2)
+        hry = getval(3, 1);
+    else
+        hry = getval(9, 1);
+
+    mind = getval(5, 2);
+    miny = getval(9, 3);
+
+    secd = getval(5, 4);
+    secy = getval(9, 5);
+
+    // Year: thousands, hundreds, tens, units
+    yearh = getval(9, 6);
+    years = getval(9, 7);
+    yeard = getval(9, 8);
+    yeary = getval(9, 9);
+
+    // Month: 01-12
+    mond = getval(1, 10);
+
+    if (mond == 1)
+        mony = getval(2, 11);
+    else
+        mony = getval(9, 11);
+
+    // Day: select tens and units
+    dayd = getval(3, 12);
+
+    if (dayd == 3)
+        dayy = getval(1, 13);
+    else
+        dayy = getval(9, 13);
+
+    // Start the clock after setting the date and time
+    timer1_init();
+
+    // ----------------------------------------------
+    // Display multiplexing
+    //
+    // 0-1:   Hour
+    // 2-3:   Minute
+    // 4-5:   Second
+    // 6-9:   Year
+    // 10-11: Month
+    // 12-13: Day
+    // ----------------------------------------------
+
+    while (1)
+    {
+        switch (select)
+        {
+            case 0:  display_digit(0, hrd);   break;
+            case 1:  display_digit(1, hry);   break;
+
+            case 2:  display_digit(2, mind);  break;
+            case 3:  display_digit(3, miny);  break;
+
+            case 4:  display_digit(4, secd);  break;
+            case 5:  display_digit(5, secy);  break;
+
+            case 6:  display_digit(6, yearh); break;
+            case 7:  display_digit(7, years); break;
+            case 8:  display_digit(8, yeard); break;
+            case 9:  display_digit(9, yeary); break;
+
+            case 10: display_digit(10, mond); break;
+            case 11: display_digit(11, mony); break;
+
+            case 12: display_digit(12, dayd); break;
+            case 13: display_digit(13, dayy); break;
+        }
+
+        select++;
+
+        if (select >= 14)
+            select = 0;
+    }
+}
